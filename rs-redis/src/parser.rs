@@ -5,13 +5,17 @@ use crate::types::RESPResult;
 pub fn string_to_resp_message(message: &str) -> Result<Vec<u8>, String> {
     let mut msg_str: Vec<String>;
 
-    match shell_words::split(message) {
+
+    match shell_words::split(message.trim_end_matches("\r")) {
         Ok(message) => msg_str = message,
         Err(e) => return Err(e.to_string())
     }
 
+    if msg_str.len() < 1 {
+        return Err("No command".to_string());
+    }
     
-    println!("string_to_resp_message: {:?}", msg_str);
+    //println!("string_to_resp_message: {:?}", msg_str);
 
     let mut resp_string = String::from("*") + &msg_str.len().to_string() + "\r\n";
 
@@ -20,6 +24,26 @@ pub fn string_to_resp_message(message: &str) -> Result<Vec<u8>, String> {
     }
 
     Ok(resp_string.into_bytes())
+}
+
+pub fn respresult_to_resp_string(respmessage: &RESPResult) -> Result<String, String> {
+    let result = match respmessage {
+        RESPResult::SimpleString(s) => format!("+{}\r\n", s),
+        RESPResult::Error(e) => format!("-{}\r\n", e),
+        RESPResult::Integer(i) => format!("-{}\r\n", i),
+        RESPResult::BulkString(Some(bytes)) => format!("${}\r\n{}\r\n", &bytes.len(), String::from_utf8(bytes.clone()).unwrap()),
+        RESPResult::BulkString(None) => "$0\r\n\r\n".to_string(),
+        RESPResult::Array(elements) => {
+            elements
+                .iter()
+                .enumerate()
+                .map(|(i, elem)| format!("{}) {}", i + 1, respresult_to_resp_string(elem).unwrap()))
+                .collect::<Vec<String>>()
+                .join("")
+        },
+    };
+
+    Ok(result)
 }
 
 pub fn resp_message_to_string(respmessage: &RESPResult) -> String {
@@ -43,7 +67,7 @@ pub fn resp_message_to_string(respmessage: &RESPResult) -> String {
 // parse RESP message
 pub fn parse_resp_message(message: &[u8]) ->  Result<(RESPResult, usize), String> {
 
-    println!("parse_resp_message - parsing: {:?}", String::from_utf8_lossy(&message));
+    //println!("parse_resp_message - parsing: {:?}", String::from_utf8_lossy(&message));
 
     match message.first() {
         Some(b'+') => parse_simple_string(message),
@@ -63,7 +87,7 @@ fn parse_simple_string(message: &[u8]) -> Result<(RESPResult, usize), String> {
 
     let bytes: &[u8] = &message[1..pos];
 
-    println!("parse_simple_string: {:?}", bytes);
+    //println!("parse_simple_string: {:?}", bytes);
 
     Ok((
         RESPResult::SimpleString(String::from_utf8_lossy(bytes).to_string()),
@@ -78,7 +102,7 @@ fn parse_error_string(message: &[u8]) -> Result<(RESPResult, usize), String>  {
 
     let bytes: &[u8] = &message[1..pos];
 
-    println!("parse_error_string: {:?}", bytes);
+    //println!("parse_error_string: {:?}", bytes);
 
     Ok((
         RESPResult::Error(String::from_utf8_lossy(bytes).to_string()),
@@ -93,7 +117,7 @@ fn parse_integer_string(message: &[u8]) -> Result<(RESPResult, usize), String>  
 
     let bytes: &[u8] = &message[1..pos];
 
-    println!("parse_integer_string: {:?}", bytes);
+    //println!("parse_integer_string: {:?}", bytes);
 
     let integer: i64 = match String::from_utf8_lossy(bytes).parse() {
         Ok(val) => val,
@@ -136,7 +160,7 @@ fn parse_bulk_string(message: &[u8]) -> Result<(RESPResult, usize), String> {
 }
 
 fn parse_array(message: &[u8]) -> Result<(RESPResult, usize), String> {
-    println!("parse_array: {:?}", message);
+    //println!("parse_array: {:?}", message);
     let mut elements: Vec<RESPResult> = Vec::new();
     
     let mut pos: usize = message.windows( 2).position(|window: &[u8]| window == b"\r\n").unwrap();
@@ -165,6 +189,58 @@ fn parse_array(message: &[u8]) -> Result<(RESPResult, usize), String> {
     ))
 } 
 
-pub fn bulk_string_to_string(message: &[u8]) {
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn test_parse_simple_string() {
+        let input = b"+PONG\r\n";
+        let (resp, _) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(resp, RESPResult::SimpleString("PONG".to_string()));
+    }
+
+    #[test]
+    fn test_parse_simple_string_bytes() {
+        let input = b"+PONG\r\n";
+        let (resp, bytes) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(
+            (resp, bytes),
+            (RESPResult::SimpleString("PONG".to_string()), 7 as usize)
+        );
+    }
+
+    #[test]
+    fn test_parse_bulk_string() {
+        let input = b"$5\r\nhello\r\n";
+        let (resp, _) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(resp, RESPResult::BulkString(Some(b"hello".to_vec())));
+    }
+
+    #[test]
+    fn test_parse_null_bulk_string() {
+        let input = b"$-1\r\n";
+        let (resp, _) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(resp, RESPResult::BulkString(None));
+    }
+
+    #[test]
+    fn test_parse_array() {
+        let input = b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
+        let (resp, _) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(
+            resp,
+            RESPResult::Array(vec![
+                RESPResult::BulkString(Some(b"foo".to_vec())),
+                RESPResult::BulkString(Some(b"bar".to_vec()))
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_integer() {
+        let input = b":12345\r\n";
+        let (resp, _) = parse_resp_message(input).expect("Parsing failed");
+        assert_eq!(resp, RESPResult::Integer(12345));
+    }
 }
