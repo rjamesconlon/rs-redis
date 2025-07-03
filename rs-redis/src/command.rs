@@ -1,5 +1,5 @@
-use crate::types::RESPResult;
-use crate::db::{self, delete};
+use crate::types::{RESPResult, DB_TYPE};
+use crate::db::{self};
 use std::time::SystemTime;
 
 pub fn command_router(command: &str, data: &[RESPResult]) -> Result<RESPResult, String> {
@@ -48,6 +48,19 @@ pub fn command_router(command: &str, data: &[RESPResult]) -> Result<RESPResult, 
             Err(e) => Err(e)
         }
     }
+    else if command == "LPUSH" {
+        match lpush_command(data) {
+            Ok(s) => Ok(RESPResult::SimpleString(s)),
+            Err(e) => Err(e)
+        }
+    }
+    else if command == "RPUSH" {
+        match rpush_command(data) {
+            Ok(s) => Ok(RESPResult::SimpleString(s)),
+            Err(e) => Err(e)
+        }
+    }
+
     else {
         Err("panic".to_string())
     }
@@ -82,9 +95,10 @@ fn set_command(data: &[RESPResult]) -> Result<String, String> {
     
     // get value
     let value = match &data[1] {
-        RESPResult::BulkString(Some(message)) => message.clone(),
+        RESPResult::BulkString(Some(message)) => String::from_utf8(message.clone()).expect("Valid string"),
         _ => return Err("Error: Not bulk string".to_string()),
     };
+
 
     // if optional arguments, get argument, convert value
     let mut t: u128 = 0;
@@ -113,7 +127,12 @@ fn set_command(data: &[RESPResult]) -> Result<String, String> {
         }
     }
 
-    match db::set(key.clone(), value.clone(), t) {
+    let set_val = match value.parse::<i64>() {
+        Ok(v) => DB_TYPE::Int(v),
+        Err(_) => DB_TYPE::Str(value),
+    };
+
+    match db::set(key.clone(), set_val, t) {
         Ok(_) => Ok("OK".to_string()),
         Err(e) => Err(e)
     }
@@ -130,10 +149,16 @@ fn get_command(data: &[RESPResult]) -> Result<String, String> {
         _ => return Err("Error: Not bulk string".to_string()),
     };
     
-    let value: Option<Vec<u8>> = db::get(&key);
+    let value: Option<DB_TYPE> = db::get(&key);
     
     match value {
-        Some(val) => Ok(String::from_utf8(val).unwrap()),
+        Some(val) => {
+            match val {
+                DB_TYPE::Int(i) => Ok(i.to_string()),
+                DB_TYPE::Str(s) =>  Ok(s),
+                _ => return Err("Cannot unpack DB_TYPE".to_string())
+            }
+        },
         None => Ok(String::new())
     }
 }
@@ -141,7 +166,7 @@ fn get_command(data: &[RESPResult]) -> Result<String, String> {
 fn exists_command(data: &[RESPResult]) -> Result<i32, String> { 
     
     if data.len() != 1 {
-        return Err("Missing key/value for GET".to_string());
+        return Err("Missing key/value for EXISTS".to_string());
     }
 
     let mut keys: Vec<String> = Vec::new();
@@ -199,6 +224,79 @@ fn decrement_command(data: &[RESPResult]) -> Result<String, String> {
     
     db::decrement(&key)
 }
+
+fn lpush_command(data: &[RESPResult]) -> Result<String, String> {
+    
+    if data.len() == 1 {
+        return Err("Missing key/value for LPUSH".to_string());
+    }
+
+    // get key
+    let key = match &data[0] {
+        RESPResult::BulkString(Some(message)) => String::from_utf8(message.clone()).unwrap(),
+        _ => return Err("Error: Not bulk string".to_string()),
+    };
+    
+    // values to push
+    let mut values: Vec<DB_TYPE> = Vec::new();
+    for value in &data[1..] {
+        match &value {
+                RESPResult::BulkString(Some(message)) => {
+                    let str_val = String::from_utf8(message.clone()).expect("Not valid string");
+
+                    let v = match str_val.parse::<i64>() {
+                        Ok(v) => DB_TYPE::Int(v),
+                        Err(_) => DB_TYPE::Str(str_val),
+                    };
+
+                    values.push(v);
+                },
+                _ => return Err("Error: Not bulk string".to_string()),
+        }
+    };
+
+    match db::lpush(&key, values) {
+        Ok(i) => Ok(i.to_string()),
+        Err(e) => Err(e)
+    }
+}
+
+fn rpush_command(data: &[RESPResult]) -> Result<String, String> {
+    
+    if data.len() == 1 {
+        return Err("Missing key/value for RPUSH".to_string());
+    }
+
+    // get key
+    let key = match &data[0] {
+        RESPResult::BulkString(Some(message)) => String::from_utf8(message.clone()).unwrap(),
+        _ => return Err("Error: Not bulk string".to_string()),
+    };
+    
+    // values to push
+    let mut values: Vec<DB_TYPE> = Vec::new();
+    for value in &data[1..] {
+        match &value {
+                RESPResult::BulkString(Some(message)) => {
+                    let str_val = String::from_utf8(message.clone()).expect("Not valid string");
+
+                    let v = match str_val.parse::<i64>() {
+                        Ok(v) => DB_TYPE::Int(v),
+                        Err(_) => DB_TYPE::Str(str_val),
+                    };
+
+                    values.push(v);
+                },
+                _ => return Err("Error: Not bulk string".to_string()),
+        }
+    };
+    
+    match db::rpush(&key, values) {
+        Ok(i) => Ok(i.to_string()),
+        Err(e) => Err(e)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -405,7 +503,7 @@ mod tests {
     
     #[test]
     fn test_exists_command_existing_key() {
-        db::set("exists_test".to_string(), b"value".to_vec(), 0).unwrap();
+        db::set("exists_test".to_string(), DB_TYPE::Str("value".to_string()), 0).unwrap();
         let data = vec![bulk("exists_test")];
         let result = exists_command(&data).unwrap();
         assert_eq!(result, 1);
@@ -420,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_delete_command_existing_key() {
-        db::set("delete_test".to_string(), b"value".to_vec(), 0).unwrap();
+        db::set("delete_test".to_string(), DB_TYPE::Str("value".to_string()), 0).unwrap();
         let data = vec![bulk("delete_test")];
         let result = delete_command(&data).unwrap();
         assert_eq!(result, 1);
@@ -465,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_increment_after_set() {
-        db::set("num_key".to_string(), b"5".to_vec(), 0).unwrap();
+        db::set("num_key".to_string(), DB_TYPE::Int(5), 0).unwrap();
         let data = vec![bulk("num_key")];
         let result = increment_command(&data).unwrap();
         assert_eq!(result, "OK");
@@ -476,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_decrement_after_set() {
-        db::set("dec_key".to_string(), b"10".to_vec(), 0).unwrap();
+        db::set("dec_key".to_string(), DB_TYPE::Int(10), 0).unwrap();
         let data = vec![bulk("dec_key")];
         let result = decrement_command(&data).unwrap();
         assert_eq!(result, "OK");
@@ -487,9 +585,124 @@ mod tests {
 
     #[test]
     fn test_increment_invalid_data() {
-        db::set("bad_data".to_string(), b"not_a_number".to_vec(), 0).unwrap();
+        db::set("bad_data".to_string(), DB_TYPE::Str("value".to_string()), 0).unwrap();
         let data = vec![bulk("bad_data")];
         let result = increment_command(&data);
         assert!(result.is_err());
+    }
+
+    
+    #[test]
+    fn test_lpush_valid_int_and_string() {
+        let input = vec![
+            bulk("mylist"),
+            bulk("123"),
+            bulk("hello"),
+        ];
+
+        let result = lpush_command(&input);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2");
+
+    let stored = db::get("mylist").unwrap();
+
+    match stored {
+        DB_TYPE::Array(ref items) => {
+            assert_eq!(items, &vec![
+                DB_TYPE::Str("hello".to_string()),
+                DB_TYPE::Int(123)
+                ]);
+            },
+        _ => panic!("Expected DB_TYPE::Array"),
+        }
+    }
+
+    #[test]
+    fn test_lpush_missing_value() {
+        let input = vec![
+            bulk("mylist"),
+        ];
+        let result = lpush_command(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Missing key/value for LPUSH");
+    }
+
+    #[test]
+    fn test_lpush_invalid_type() {
+        let input = vec![
+            RESPResult::BulkString(None), // invalid key
+            bulk("hello"),
+        ];
+        let result = lpush_command(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Error: Not bulk string");
+    }
+
+    #[test]
+    fn test_rpush_valid_mixed_types() {
+        let input = vec![
+            bulk("mylist1"),
+            bulk("123"),
+            bulk("hello"),
+        ];
+
+        let result = rpush_command(&input);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2");
+
+        let stored = db::get("mylist1").unwrap();
+        match stored {
+            DB_TYPE::Array(ref items) => {
+                assert_eq!(items, &vec![
+                    DB_TYPE::Int(123),
+                    DB_TYPE::Str("hello".to_string()),
+                ]);
+            }
+            _ => panic!("Expected DB_TYPE::Array"),
+        }
+    }
+
+    #[test]
+    fn test_rpush_missing_values() {
+        let input = vec![
+            bulk("mylist"),
+        ];
+
+        let result = rpush_command(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Missing key/value for RPUSH");
+    }
+
+    #[test]
+    fn test_rpush_invalid_key_type() {
+        let input = vec![
+            RESPResult::BulkString(None),
+            bulk("hello"),
+        ];
+
+        let result = rpush_command(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Error: Not bulk string");
+    }
+
+    #[test]
+    fn test_rpush_multiple_calls_appends_right() {
+        let input1 = vec![bulk("mylist2"), bulk("a")];
+        let input2 = vec![bulk("mylist2"), bulk("b"), bulk("c")];
+
+        let _ = rpush_command(&input1);
+        let _ = rpush_command(&input2);
+
+        let stored = db::get("mylist2").unwrap();
+        match stored {
+            DB_TYPE::Array(ref items) => {
+                assert_eq!(items, &vec![
+                    DB_TYPE::Str("a".to_string()),
+                    DB_TYPE::Str("b".to_string()),
+                    DB_TYPE::Str("c".to_string()),
+                ]);
+            }
+            _ => panic!("Expected DB_TYPE::Array"),
+        }
     }
 }
