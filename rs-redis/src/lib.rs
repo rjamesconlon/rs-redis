@@ -1,6 +1,6 @@
-mod parser;
+pub mod parser;
 mod types;
-mod command;
 mod db;
-pub mod server;
+pub mod command;
 pub mod cli;
+pub mod network;

@@ -60,7 +60,18 @@ pub fn command_router(command: &str, data: &[RESPResult]) -> Result<RESPResult, 
             Err(e) => Err(e)
         }
     }
-
+    else if command == "SAVE" {
+        match save_command() {
+            Ok(s) => Ok(RESPResult::SimpleString(s)),
+            Err(e) => Err(e)
+        }
+    }
+    else if command == "LOAD" {
+        match load_command(data) {
+            Ok(s) => Ok(RESPResult::SimpleString(s)),
+            Err(e) => Err(e)
+        }
+    }
     else {
         Err("panic".to_string())
     }
@@ -156,6 +167,7 @@ fn get_command(data: &[RESPResult]) -> Result<String, String> {
             match val {
                 DB_TYPE::Int(i) => Ok(i.to_string()),
                 DB_TYPE::Str(s) =>  Ok(s),
+                
                 _ => return Err("Cannot unpack DB_TYPE".to_string())
             }
         },
@@ -297,6 +309,23 @@ fn rpush_command(data: &[RESPResult]) -> Result<String, String> {
     }
 }
 
+pub fn save_command() -> Result<String, String> {
+    db::write_db_to_file()
+}
+
+pub fn load_command(data: &[RESPResult]) -> Result<String, String> {
+    if data.len() != 1 {
+        return Err("Error: only provide path when loading: LOAD ./file.rdb".to_string());
+    }
+
+    let path = match &data[0] {
+        RESPResult::BulkString(Some(message)) => String::from_utf8(message.clone()).unwrap(),
+        _ => return Err("Error: Not bulk string".to_string()),
+    };
+
+    db::read_db_from_file(&path)
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -431,16 +460,12 @@ mod tests {
 
     #[test]
     fn test_pxat_expiry() {
-        println!("TEST");
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
 
         let expire_at = now_ms + 500; // expires in 500ms
-
-        println!("{:?}",now_ms);
-        println!("{:?}",expire_at);
 
         let data = vec![
             bulk("key_pxat"),
@@ -450,10 +475,8 @@ mod tests {
         ];
 
         set_command(&data).unwrap();
-        println!("{:?}",expire_at);
         thread::sleep(Duration::from_millis(600));
 
-        println!("{:?}",expire_at);
         let get_result = get_command(&[bulk("key_pxat")]).unwrap();
         assert_eq!(get_result, "");
     }
@@ -577,10 +600,12 @@ mod tests {
         db::set("dec_key".to_string(), DB_TYPE::Int(10), 0).unwrap();
         let data = vec![bulk("dec_key")];
         let result = decrement_command(&data).unwrap();
+        println!("{:?}", result);
         assert_eq!(result, "OK");
 
-        let result3 = get_command(&data);
-        assert_eq!(result3, Ok("9".to_string()));
+        let result2 = get_command(&data);
+        println!("{:?}", result2);
+        assert_eq!(result2, Ok("9".to_string()));
     }
 
     #[test]
